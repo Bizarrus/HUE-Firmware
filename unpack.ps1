@@ -50,7 +50,7 @@ if ($magic -ne "BSB002") {
 
 # Metadaten
 $numFiles = $data[7]
-$totalSize = ($data[8] -shl 24) -bor ($data[9] -shl 16) -bor ($data[10] -shl 8) -bor $data[11]
+$totalSize = [uint32]$data[8] * 16777216 + [uint32]$data[9] * 65536 + [uint32]$data[10] * 256 + [uint32]$data[11]
 $builder = [System.Text.Encoding]::ASCII.GetString($data[12..27]).TrimEnd([char]0)
 $version = [System.Text.Encoding]::ASCII.GetString($data[40..51]).TrimEnd([char]0)
 $ivBytes = $data[60..75]
