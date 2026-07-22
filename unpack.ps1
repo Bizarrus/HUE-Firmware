@@ -1,76 +1,58 @@
 # Signify/Philips Hue Bridge fw2 Firmware Unpacker
-# Requires: PowerShell 5.1+ (Windows 10/11 built-in)
-#           openssl.exe (Windows 10/11 built-in)
-#           tar.exe (Windows 10/11 built-in)
-#
-# fw2 Format:
-#   Offset  0-5:   Magic "BSB002"
-#   Offset  6:     Format version
-#   Offset  7:     Number of files
-#   Offset  8-11:  Total size (big-endian)
-#   Offset 12-27:  Builder string (null-padded)
-#   Offset 34-59:  Section header
-#   Offset 60-75:  AES-256-CBC IV (16 bytes)
-#   Offset 76+:    gzip-compressed TAR (kernel.bin + root.bin)
+# Benoetigt: PowerShell 5.1+, openssl, tar (Windows 10/11 built-in)
 #
 # Nutzung:
-#   .\unpack_fw2.ps1 -Fw2Path "BSB002_1978074000.fw2" -KeyHex "5590016d..."
-#   .\unpack_fw2.ps1 -Fw2Path "BSB002_1978074000.fw2" -KeyHex "5590016d..." -OutDir "C:\output"
+#   .\unpack_fw2.ps1 -Fw2Path "firmware.fw2" -KeyHex "5590016d..."
+#   .\unpack_fw2.ps1 -Fw2Path "firmware.fw2" -KeyHex "5590016d..." -OutDir "C:\output"
 
 param(
     [Parameter(Mandatory=$true)]
     [string]$Fw2Path,
 
     [Parameter(Mandatory=$true)]
-    [ValidateLength(64,64)]
     [string]$KeyHex,
 
     [Parameter(Mandatory=$false)]
     [string]$OutDir = ".\output"
 )
 
-# Farben für Output
-function Write-Info  { param($msg) Write-Host $msg -ForegroundColor Cyan }
-function Write-OK    { param($msg) Write-Host $msg -ForegroundColor Green }
-function Write-Fail  { param($msg) Write-Host $msg -ForegroundColor Red }
-function Write-Warn  { param($msg) Write-Host $msg -ForegroundColor Yellow }
-
 Write-Host ""
 Write-Host "fw2 Unpacker - Signify/Philips Hue Bridge" -ForegroundColor White
 Write-Host "==========================================" -ForegroundColor White
 Write-Host ""
 
-# Datei prüfen
+# Pruefungen
 if (-not (Test-Path $Fw2Path)) {
-    Write-Fail "Fehler: Datei nicht gefunden: $Fw2Path"
+    Write-Host "Fehler: Datei nicht gefunden: $Fw2Path" -ForegroundColor Red
+    exit 1
+}
+if ($KeyHex.Length -ne 64) {
+    Write-Host "Fehler: Key muss 64 Hex-Zeichen haben" -ForegroundColor Red
     exit 1
 }
 
-# Ausgabe-Ordner erstellen
 if (-not (Test-Path $OutDir)) {
     New-Item -ItemType Directory -Path $OutDir | Out-Null
 }
-$OutDir = Resolve-Path $OutDir
+$OutDir = (Resolve-Path $OutDir).Path
 
-# fw2 Datei lesen
-Write-Info "Lese fw2-Datei: $Fw2Path"
+# fw2 lesen
+Write-Host "Lese: $Fw2Path" -ForegroundColor Cyan
 $data = [System.IO.File]::ReadAllBytes($Fw2Path)
 
-# Magic prüfen
+# Magic pruefen
 $magic = [System.Text.Encoding]::ASCII.GetString($data[0..5])
 if ($magic -ne "BSB002") {
-    Write-Fail "Fehler: Ungültiges Magic: '$magic' (erwartet: BSB002)"
+    Write-Host "Fehler: Ungueltige Magic: $magic" -ForegroundColor Red
     exit 1
 }
 
-# Metadaten lesen
+# Metadaten
 $numFiles = $data[7]
-# Total size: big-endian uint32 ab Offset 8
 $totalSize = ($data[8] -shl 24) -bor ($data[9] -shl 16) -bor ($data[10] -shl 8) -bor $data[11]
 $builder = [System.Text.Encoding]::ASCII.GetString($data[12..27]).TrimEnd([char]0)
 $version = [System.Text.Encoding]::ASCII.GetString($data[40..51]).TrimEnd([char]0)
 
-Write-Info "fw2 Informationen:"
 Write-Host "  Builder:  $builder"
 Write-Host "  Version:  $version"
 Write-Host "  Dateien:  $numFiles"
@@ -82,78 +64,56 @@ $ivHex = ($ivBytes | ForEach-Object { $_.ToString("x2") }) -join ""
 Write-Host "  IV:       $ivHex"
 Write-Host ""
 
-# Payload extrahieren (ab Offset 76)
-Write-Info "Extrahiere verschlüsselte Payload..."
+# Payload speichern
 $payloadPath = Join-Path $OutDir "payload.enc"
 $payload = $data[76..(76 + $totalSize - 1)]
 [System.IO.File]::WriteAllBytes($payloadPath, $payload)
-Write-Host "  Payload:  $($payload.Length) bytes -> $payloadPath"
+Write-Host "Payload: $($payload.Length) bytes" -ForegroundColor Cyan
 
-# Entschlüsseln mit openssl
-Write-Info "Entschlüssele mit AES-256-CBC..."
+# Entschluesseln
+Write-Host "Entschluessele mit AES-256-CBC..." -ForegroundColor Cyan
 $decryptedPath = Join-Path $OutDir "payload.tar.gz"
 
-$opensslArgs = @(
-    "enc", "-d", "-aes-256-cbc",
-    "-in", $payloadPath,
-    "-out", $decryptedPath,
-    "-K", $KeyHex,
-    "-iv", $ivHex,
-    "-nosalt"
-)
+$opensslArgs = "enc -d -aes-256-cbc -in `"$payloadPath`" -out `"$decryptedPath`" -K $KeyHex -iv $ivHex -nosalt"
+$proc = Start-Process -FilePath "openssl" -ArgumentList $opensslArgs -Wait -PassThru -RedirectStandardError "$OutDir\openssl.err" -NoNewWindow
+Write-Host "  Trailing garbage (RSA-Signatur) wird ignoriert" -ForegroundColor Yellow
 
-$result = & openssl @opensslArgs 2>&1
-if ($LASTEXITCODE -ne 0) {
-    # Trailing garbage von RSA-Signatur wird ignoriert
-    Write-Warn "  Hinweis: Trailing garbage ignoriert (RSA-Signatur am Ende - normal)"
-}
-
-# gzip Magic prüfen
-$decBytes = [System.IO.File]::ReadAllBytes($decryptedPath)
-if ($decBytes[0] -eq 0x1f -and $decBytes[1] -eq 0x8b) {
-    Write-OK "  gzip Magic OK (0x1f 0x8b)"
+# gzip Magic pruefen
+$gz = [System.IO.File]::ReadAllBytes($decryptedPath)
+if ($gz[0] -eq 0x1f -and $gz[1] -eq 0x8b) {
+    Write-Host "  gzip Magic OK" -ForegroundColor Green
 } else {
-    Write-Fail "  Fehler: Ungültiges gzip Magic: $($decBytes[0].ToString('x2')) $($decBytes[1].ToString('x2'))"
-    Write-Fail "  Falscher Key oder IV!"
-    Remove-Item $payloadPath -ErrorAction SilentlyContinue
-    Remove-Item $decryptedPath -ErrorAction SilentlyContinue
+    Write-Host "  Fehler: Kein gzip gefunden - falscher Key oder IV?" -ForegroundColor Red
+    Remove-Item $payloadPath, $decryptedPath -ErrorAction SilentlyContinue
     exit 1
 }
 
-# TAR extrahieren
-Write-Info "Extrahiere TAR-Archiv..."
-$tarResult = & tar -xzf $decryptedPath -C $OutDir 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Warn "  Hinweis: tar Warnung (trailing garbage ignoriert)"
-}
+# Extrahieren
+Write-Host "Extrahiere TAR-Archiv..." -ForegroundColor Cyan
+$tarProc = Start-Process -FilePath "tar" -ArgumentList "-xzf `"$decryptedPath`" -C `"$OutDir`"" -Wait -PassThru -NoNewWindow
 
-# Temporäre Dateien aufräumen
+# Aufraeumen
 Remove-Item $payloadPath -ErrorAction SilentlyContinue
 Remove-Item $decryptedPath -ErrorAction SilentlyContinue
+Remove-Item "$OutDir\openssl.err" -ErrorAction SilentlyContinue
 
-# Ergebnis anzeigen
+# Ergebnis
 Write-Host ""
-Write-OK "Fertig! Extrahierte Dateien:"
+Write-Host "Fertig! Extrahierte Dateien:" -ForegroundColor Green
 Get-ChildItem -Path $OutDir -Filter "*.bin" | ForEach-Object {
-    $size = "{0:N0}" -f $_.Length
-    Write-Host "  $($_.Name) ($size bytes)"
+    $mb = [math]::Round($_.Length / 1MB, 2)
+    Write-Host "  $($_.Name) ($mb MB)"
 }
 
 # kernel.bin validieren
 $kernelPath = Join-Path $OutDir "kernel.bin"
 if (Test-Path $kernelPath) {
-    $kernelBytes = [System.IO.File]::ReadAllBytes($kernelPath)
-    # U-Boot Magic: 0x27051956
-    if ($kernelBytes[0] -eq 0x27 -and $kernelBytes[1] -eq 0x05 -and
-        $kernelBytes[2] -eq 0x19 -and $kernelBytes[3] -eq 0x56) {
-        Write-OK "  kernel.bin: gültiges U-Boot uImage ✓"
-        # Kernel-Name aus Header lesen (Offset 32, 32 bytes)
-        $kernelName = [System.Text.Encoding]::ASCII.GetString($kernelBytes[32..63]).TrimEnd([char]0)
-        Write-Host "  Kernel:     $kernelName"
-    } else {
-        Write-Warn "  kernel.bin: Unbekanntes Format"
+    $kb = [System.IO.File]::ReadAllBytes($kernelPath)
+    if ($kb[0] -eq 0x27 -and $kb[1] -eq 0x05 -and $kb[2] -eq 0x19 -and $kb[3] -eq 0x56) {
+        $kname = [System.Text.Encoding]::ASCII.GetString($kb[32..63]).TrimEnd([char]0)
+        Write-Host "  Kernel: $kname" -ForegroundColor Green
     }
 }
 
 Write-Host ""
-Write-Host "Ausgabe-Ordner: $OutDir" -ForegroundColor White
+Write-Host "Ausgabe-Ordner: $OutDir"
