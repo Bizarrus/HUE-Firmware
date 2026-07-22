@@ -23,43 +23,29 @@ if not exist "%OUTDIR%" mkdir "%OUTDIR%"
 echo fw2 Unpacker - Signify/Philips Hue Bridge
 echo ==========================================
 
-REM Python-Script als separate Datei erzeugen (kein Inline-Escaping)
-set PYSCRIPT=%TEMP%\fw2unpack_%RANDOM%.py
-set INFOFILE=%TEMP%\fw2info_%RANDOM%.txt
+REM Python-Script als echte Datei schreiben (eine Zeile pro echo)
+set PYSCRIPT=%TEMP%\fw2unpack.py
+set INFOFILE=%TEMP%\fw2info.txt
 
-python -c "
-script = '''
-import sys, struct
-
-fw2 = sys.argv[1]
-payload_out = sys.argv[2]
-info_out = sys.argv[3]
-
-with open(fw2, 'rb') as f:
-    data = f.read()
-
-if data[0:6] != b'BSB002':
-    print('ERROR:Ungültiges Magic')
-    sys.exit(1)
-
-builder = data[12:28].rstrip(b'\\x00').decode('ascii', errors='replace')
-version = data[40:52].rstrip(b'\\x00').decode('ascii', errors='replace')
-total = struct.unpack('>I', data[8:12])[0]
-iv = data[60:76].hex()
-
-with open(info_out, 'w') as f:
-    f.write('BUILDER=' + builder + '\\n')
-    f.write('VERSION=' + version + '\\n')
-    f.write('TOTAL=' + str(total) + '\\n')
-    f.write('IV=' + iv + '\\n')
-
-with open(payload_out, 'wb') as f:
-    f.write(data[76:76+total])
-
-print('OK')
-'''
-open(r'%PYSCRIPT%', 'w').write(script)
-"
+echo import sys, struct > "%PYSCRIPT%"
+echo fw2 = sys.argv[1] >> "%PYSCRIPT%"
+echo payload_out = sys.argv[2] >> "%PYSCRIPT%"
+echo info_out = sys.argv[3] >> "%PYSCRIPT%"
+echo data = open(fw2, 'rb').read() >> "%PYSCRIPT%"
+echo if data[0:6] != b'BSB002': >> "%PYSCRIPT%"
+echo     print('Fehler: Ungültiges Magic'); sys.exit(1) >> "%PYSCRIPT%"
+echo builder = data[12:28].rstrip(b'\x00').decode('ascii', errors='replace') >> "%PYSCRIPT%"
+echo version = data[40:52].rstrip(b'\x00').decode('ascii', errors='replace') >> "%PYSCRIPT%"
+echo total = struct.unpack('>I', data[8:12])[0] >> "%PYSCRIPT%"
+echo iv = data[60:76].hex() >> "%PYSCRIPT%"
+echo f = open(info_out, 'w') >> "%PYSCRIPT%"
+echo f.write('BUILDER=' + builder + '\n') >> "%PYSCRIPT%"
+echo f.write('VERSION=' + version + '\n') >> "%PYSCRIPT%"
+echo f.write('TOTAL=' + str(total) + '\n') >> "%PYSCRIPT%"
+echo f.write('IV=' + iv + '\n') >> "%PYSCRIPT%"
+echo f.close() >> "%PYSCRIPT%"
+echo open(payload_out, 'wb').write(data[76:76+total]) >> "%PYSCRIPT%"
+echo print('OK') >> "%PYSCRIPT%"
 
 python "%PYSCRIPT%" "%FW2%" "%OUTDIR%\payload.enc" "%INFOFILE%"
 if errorlevel 1 (
@@ -70,12 +56,10 @@ if errorlevel 1 (
 REM Info-Datei lesen
 for /f "tokens=1,2 delims==" %%a in (%INFOFILE%) do (
     if "%%a"=="BUILDER" echo   Builder: %%b
-    if "%%a"=="VERSION" set VER=%%b
-    if "%%a"=="TOTAL"   set TOTAL=%%b
+    if "%%a"=="VERSION" echo   Version: %%b
     if "%%a"=="IV"      set IV=%%b
 )
-echo   Version: %VER%
-echo   IV:      %IV%
+echo   IV: %IV%
 echo.
 
 echo Entschluessele Payload...
