@@ -22,10 +22,12 @@ Write-Host "==========================================" -ForegroundColor White
 Write-Host ""
 
 # Pruefungen
-if (-not (Test-Path $Fw2Path)) {
+$Fw2Path = Resolve-Path $Fw2Path -ErrorAction SilentlyContinue
+if (-not $Fw2Path) {
     Write-Host "Fehler: Datei nicht gefunden: $Fw2Path" -ForegroundColor Red
     exit 1
 }
+$Fw2Path = $Fw2Path.Path
 if ($KeyHex.Length -ne 64) {
     Write-Host "Fehler: Key muss 64 Hex-Zeichen haben" -ForegroundColor Red
     exit 1
